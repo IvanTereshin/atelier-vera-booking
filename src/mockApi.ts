@@ -71,6 +71,39 @@ export const api = {
     return nextBookings;
   },
 
+  async rescheduleBooking(id: string, date: string, time: string) {
+    await wait();
+    const bookings = bookingStore.getBookings();
+    const blockedSlots = bookingStore.getBlockedSlots();
+    const currentBooking = bookings.find((booking) => booking.id === id);
+
+    if (!currentBooking) {
+      throw new Error('Запись не найдена.');
+    }
+
+    const hasBooking = bookings.some(
+      (booking) =>
+        booking.id !== id &&
+        booking.specialistId === currentBooking.specialistId &&
+        booking.date === date &&
+        booking.time === time &&
+        booking.status !== 'cancelled',
+    );
+    const hasBlock = blockedSlots.some(
+      (slot) => slot.specialistId === currentBooking.specialistId && slot.date === date && slot.time === time,
+    );
+
+    if (hasBooking || hasBlock) {
+      throw new Error('Этот слот уже занят. Выберите другое время.');
+    }
+
+    const nextBookings = bookings.map((booking) =>
+      booking.id === id ? { ...booking, date, time, status: 'confirmed' as const } : booking,
+    );
+    bookingStore.setBookings(nextBookings);
+    return nextBookings;
+  },
+
   async updateBookingStatus(id: string, status: BookingStatus) {
     await wait();
     const nextBookings = bookingStore

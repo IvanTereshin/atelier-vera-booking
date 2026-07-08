@@ -1,17 +1,26 @@
 import {
   Ban,
+  Bell,
   CalendarDays,
   Check,
+  Clock,
   Home,
   LayoutDashboard,
   Loader2,
+  MapPin,
   MessageCircle,
+  Phone,
+  RefreshCw,
   Scissors,
+  ShieldCheck,
   Sparkles,
   Star,
+  Users,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
 import { demoDates } from './data';
 import { api, isSlotOccupied } from './mockApi';
 import { initTelegramShell } from './telegram';
@@ -20,6 +29,16 @@ import type { BlockedSlot, Booking, BookingStatus, Service, Specialist, TabKey }
 const currentClient = {
   name: 'Иван Терешин',
   phone: '+7 900 120-44-18',
+};
+
+const businessProfile = {
+  name: 'Atelier Vera',
+  subtitle: 'Hair, color and evening styling',
+  address: 'Патриаршие, Большой Козихинский пер., 14',
+  nearestSlot: 'сегодня 17:00',
+  rating: '4.92',
+  reviews: 318,
+  cancellation: 'Бесплатный перенос за 6 часов',
 };
 
 const moneyFormatter = new Intl.NumberFormat('ru-RU');
@@ -48,6 +67,20 @@ const isPastBooking = (booking: Booking) => {
 const getService = (services: Service[], id: string) => services.find((service) => service.id === id);
 const getSpecialist = (specialists: Specialist[], id: string) =>
   specialists.find((specialist) => specialist.id === id);
+
+function useReducedMotionPreference() {
+  const [reduced, setReduced] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReduced(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  return reduced;
+}
 
 function ImageFallback({
   src,
@@ -82,12 +115,12 @@ function AppHeader({
   activeTab: TabKey;
   onTabChange: (tab: TabKey) => void;
 }) {
-  const title = activeTab === 'booking' ? 'Запись' : activeTab === 'my' ? 'Мои записи' : 'Админ-день';
+  const title = activeTab === 'booking' ? businessProfile.name : activeTab === 'my' ? 'Мои записи' : 'Админ-день';
 
   return (
     <header className="app-header">
       <div>
-        <p className="app-kicker">Local Booking</p>
+        <p className="app-kicker">Private booking</p>
         <h1>{title}</h1>
       </div>
       <button className="telegram-action" type="button" onClick={() => onTabChange('my')}>
@@ -109,10 +142,36 @@ function StudioIntro() {
         className="studio-image"
       />
       <div className="studio-copy">
-        <span>Сегодня доступно 11 окон</span>
-        <strong>Студия на Патриарших</strong>
-        <small>Онлайн-запись без звонков. Подтверждение сразу в Mini App.</small>
+        <span>Ближайшее окно: {businessProfile.nearestSlot}</span>
+        <strong>{businessProfile.name}</strong>
+        <small>{businessProfile.subtitle}</small>
+        <div className="studio-facts">
+          <small>
+            <MapPin size={13} /> {businessProfile.address}
+          </small>
+          <small>
+            <Star size={13} fill="currentColor" /> {businessProfile.rating} · {businessProfile.reviews} отзывов
+          </small>
+          <small>
+            <Users size={13} /> 3 мастера · приватные окна
+          </small>
+        </div>
       </div>
+    </section>
+  );
+}
+
+function BookingTimeline({ currentStep }: { currentStep: number }) {
+  const steps = ['Услуга', 'Мастер', 'Время', 'Подтверждение'];
+
+  return (
+    <section className="booking-timeline" aria-label="Шаги записи">
+      {steps.map((step, index) => (
+        <div className={index <= currentStep ? 'timeline-step active' : 'timeline-step'} key={step}>
+          <span>{index + 1}</span>
+          <strong>{step}</strong>
+        </div>
+      ))}
     </section>
   );
 }
@@ -137,9 +196,14 @@ function BookingFlow({
   const [date, setDate] = useState(demoDates[0]);
   const [time, setTime] = useState('');
   const [note, setNote] = useState('');
+  const [phoneCodeSent, setPhoneCodeSent] = useState(false);
+  const [waitlistEntries, setWaitlistEntries] = useState<string[]>([]);
+  const [waitlistNotice, setWaitlistNotice] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState<Booking | null>(null);
+  const successRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotionPreference();
 
   const selectedService = getService(services, serviceId);
   const availableSpecialists = useMemo(
@@ -168,6 +232,19 @@ function BookingFlow({
 
   const snapshot = { bookings, blockedSlots };
   const confirmationTime = success?.time ?? time;
+  const currentStep = time ? 3 : selectedSpecialist ? 2 : selectedService ? 1 : 0;
+
+  useGSAP(
+    () => {
+      if (reducedMotion || !successRef.current) return;
+      gsap.fromTo(
+        successRef.current,
+        { autoAlpha: 0, y: 18, scale: 0.98 },
+        { autoAlpha: 1, y: 0, scale: 1, duration: 0.42, ease: 'power3.out' },
+      );
+    },
+    { dependencies: [success?.id, reducedMotion], scope: successRef },
+  );
 
   const handleServiceSelect = (id: string) => {
     setServiceId(id);
@@ -209,6 +286,14 @@ function BookingFlow({
     }
   };
 
+  const joinWaitlist = (slot: string) => {
+    const key = `${selectedSpecialist.id}-${date}-${slot}`;
+    setWaitlistEntries((current) => (current.includes(key) ? current : [...current, key]));
+    setWaitlistNotice(`${slot} занят. Мы поставили вас в лист ожидания и пришлем уведомление, если окно освободится.`);
+    setTime('');
+    setSuccess(null);
+  };
+
   if (!selectedService || !selectedSpecialist) {
     return <EmptyState title="Нет доступных услуг" text="Добавьте услуги и специалистов в демо-данные." />;
   }
@@ -216,9 +301,10 @@ function BookingFlow({
   return (
     <main className="screen booking-screen">
       <StudioIntro />
+      <BookingTimeline currentStep={currentStep} />
 
       <section className="flow-section">
-        <SectionTitle eyebrow="Шаг 1" title="Выберите услугу" />
+        <SectionTitle eyebrow="Прайс-лист" title="Выберите услугу" />
         <div className="service-list">
           {services.map((service) => (
             <button
@@ -244,7 +330,7 @@ function BookingFlow({
       </section>
 
       <section className="flow-section">
-        <SectionTitle eyebrow="Шаг 2" title="Специалист" />
+        <SectionTitle eyebrow="Команда" title="Специалист" />
         <div className="specialist-grid">
           {availableSpecialists.map((specialist) => (
             <button
@@ -273,7 +359,7 @@ function BookingFlow({
       </section>
 
       <section className="flow-section">
-        <SectionTitle eyebrow="Шаг 3" title="Дата и время" />
+        <SectionTitle eyebrow="Календарь" title="Дата и время" />
         <div className="date-strip" aria-label="Выбор даты">
           {demoDates.map((item) => (
             <button
@@ -295,24 +381,31 @@ function BookingFlow({
         <div className="slot-grid">
           {selectedSpecialist.slots.map((slot) => {
             const occupied = isSlotOccupied(snapshot, selectedSpecialist.id, date, slot);
+            const waitlistKey = `${selectedSpecialist.id}-${date}-${slot}`;
+            const inWaitlist = waitlistEntries.includes(waitlistKey);
             return (
               <button
-                className={`slot-button ${slot === time ? 'selected' : ''}`}
+                className={`slot-button ${slot === time ? 'selected' : ''} ${occupied ? 'occupied' : ''} ${inWaitlist ? 'waitlisted' : ''}`}
                 type="button"
                 key={slot}
-                disabled={occupied}
                 onClick={() => {
+                  if (occupied) {
+                    joinWaitlist(slot);
+                    return;
+                  }
                   setTime(slot);
+                  setWaitlistNotice('');
                   setSuccess(null);
                   setError('');
                 }}
               >
                 {slot}
-                {occupied && <span>занято</span>}
+                {occupied && <span>{inWaitlist ? 'в ожидании' : 'лист ожидания'}</span>}
               </button>
             );
           })}
         </div>
+        {waitlistNotice && <p className="waitlist-note">{waitlistNotice}</p>}
       </section>
 
       <section className="confirmation-panel">
@@ -323,19 +416,35 @@ function BookingFlow({
             {selectedSpecialist.name} · {formatDate(date, 'long')} · {confirmationTime || 'выберите слот'}
           </small>
         </div>
+        <div className="trust-grid" aria-label="Условия записи">
+          <span>
+            <ShieldCheck size={15} /> {businessProfile.cancellation}
+          </span>
+          <span>
+            <Bell size={15} /> Напоминание за день и за 2 часа
+          </span>
+          <span>
+            <Phone size={15} /> Код подтверждения в Telegram
+          </span>
+        </div>
+        <button className="code-button" type="button" onClick={() => setPhoneCodeSent(true)}>
+          {phoneCodeSent ? 'Код 4281 отправлен в Telegram' : 'Отправить mock-код подтверждения'}
+        </button>
         <textarea
           value={note}
           onChange={(event) => setNote(event.target.value)}
           placeholder="Комментарий для специалиста"
           rows={3}
+          maxLength={160}
         />
+        <small className="note-limit">{note.length}/160</small>
         {error && <p className="inline-error">{error}</p>}
         <button className="primary-button" type="button" disabled={!time || isSaving || Boolean(success)} onClick={handleCreate}>
           {isSaving ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
           {isSaving ? 'Создаем запись' : success ? 'Запись создана' : 'Подтвердить запись'}
         </button>
         {success && (
-          <div className="success-state">
+          <div className="success-state" ref={successRef}>
             <Check size={18} />
             <span>
               Запись создана на {success.time}.{' '}
@@ -355,14 +464,20 @@ function MyBookings({
   services,
   specialists,
   onCancel,
+  onReschedule,
 }: {
   bookings: Booking[];
   services: Service[];
   specialists: Specialist[];
   onCancel: (id: string) => Promise<void>;
+  onReschedule: (id: string, date: string, time: string) => Promise<void>;
 }) {
   const [filter, setFilter] = useState<'active' | 'past'>('active');
   const [busyId, setBusyId] = useState('');
+  const [rescheduleId, setRescheduleId] = useState('');
+  const [rescheduleDate, setRescheduleDate] = useState(demoDates[1]);
+  const [rescheduleTime, setRescheduleTime] = useState('');
+  const [rescheduleError, setRescheduleError] = useState('');
   const userBookings = bookings.filter((booking) => booking.clientPhone === currentClient.phone);
   const visibleBookings = userBookings.filter((booking) => (filter === 'active' ? !isPastBooking(booking) : isPastBooking(booking)));
 
@@ -370,6 +485,22 @@ function MyBookings({
     setBusyId(id);
     await onCancel(id);
     setBusyId('');
+  };
+
+  const applyReschedule = async (booking: Booking) => {
+    const specialist = getSpecialist(specialists, booking.specialistId);
+    const targetTime = rescheduleTime || specialist?.slots[0] || booking.time;
+    setBusyId(`move-${booking.id}`);
+    setRescheduleError('');
+    try {
+      await onReschedule(booking.id, rescheduleDate, targetTime);
+      setRescheduleId('');
+      setRescheduleTime('');
+    } catch (caught) {
+      setRescheduleError(caught instanceof Error ? caught.message : 'Не удалось перенести запись.');
+    } finally {
+      setBusyId('');
+    }
   };
 
   return (
@@ -407,10 +538,59 @@ function MyBookings({
                 </p>
                 {booking.note && <blockquote>{booking.note}</blockquote>}
                 {!isPastBooking(booking) && (
-                  <button className="ghost-danger" type="button" onClick={() => cancel(booking.id)} disabled={busyId === booking.id}>
-                    {busyId === booking.id ? <Loader2 className="spin" size={16} /> : <X size={16} />}
-                    Отменить
-                  </button>
+                  <div className="booking-actions">
+                    <button
+                      className="secondary-button compact"
+                      type="button"
+                      onClick={() => {
+                        setRescheduleId(rescheduleId === booking.id ? '' : booking.id);
+                        setRescheduleDate(demoDates[1]);
+                        setRescheduleTime(specialist?.slots[0] ?? booking.time);
+                        setRescheduleError('');
+                      }}
+                    >
+                      <RefreshCw size={16} />
+                      Перенести
+                    </button>
+                    <button className="ghost-danger" type="button" onClick={() => cancel(booking.id)} disabled={busyId === booking.id}>
+                      {busyId === booking.id ? <Loader2 className="spin" size={16} /> : <X size={16} />}
+                      Отменить
+                    </button>
+                  </div>
+                )}
+                {rescheduleId === booking.id && !isPastBooking(booking) && specialist && (
+                  <div className="reschedule-panel">
+                    <label>
+                      День
+                      <select value={rescheduleDate} onChange={(event) => setRescheduleDate(event.target.value)}>
+                        {demoDates.slice(1).map((item) => (
+                          <option value={item} key={item}>
+                            {formatDate(item, 'long')}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Время
+                      <select value={rescheduleTime} onChange={(event) => setRescheduleTime(event.target.value)}>
+                        {specialist.slots.map((slot) => (
+                          <option value={slot} key={slot}>
+                            {slot}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {rescheduleError && <p className="inline-error">{rescheduleError}</p>}
+                    <button
+                      className="primary-button"
+                      type="button"
+                      disabled={busyId === `move-${booking.id}`}
+                      onClick={() => applyReschedule(booking)}
+                    >
+                      {busyId === `move-${booking.id}` ? <Loader2 className="spin" size={16} /> : <Clock size={16} />}
+                      Подтвердить перенос
+                    </button>
+                  </div>
                 )}
               </article>
             );
@@ -667,12 +847,14 @@ function LoadingShell() {
 }
 
 export function App() {
+  const shellRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('booking');
   const [services, setServices] = useState<Service[]>([]);
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [blockedSlots, setBlockedSlots] = useState<BlockedSlot[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const reducedMotion = useReducedMotionPreference();
 
   useEffect(() => {
     initTelegramShell();
@@ -691,6 +873,11 @@ export function App() {
     setBookings(nextBookings);
   };
 
+  const rescheduleBooking = async (id: string, date: string, time: string) => {
+    const nextBookings = await api.rescheduleBooking(id, date, time);
+    setBookings(nextBookings);
+  };
+
   const updateBookingStatus = async (id: string, status: BookingStatus) => {
     const nextBookings = await api.updateBookingStatus(id, status);
     setBookings(nextBookings);
@@ -706,11 +893,23 @@ export function App() {
     setBlockedSlots(nextBlocked);
   };
 
+  useGSAP(
+    () => {
+      if (reducedMotion) return;
+      gsap.fromTo(
+        '.app-header, .screen > *',
+        { autoAlpha: 0, y: 18 },
+        { autoAlpha: 1, y: 0, duration: 0.45, ease: 'power3.out', stagger: 0.045 },
+      );
+    },
+    { dependencies: [activeTab, reducedMotion], scope: shellRef, revertOnUpdate: true },
+  );
+
   if (isLoading) return <LoadingShell />;
 
   return (
     <div className="app-root">
-      <div className="phone-shell">
+      <div className="phone-shell" ref={shellRef}>
         <AppHeader activeTab={activeTab} onTabChange={setActiveTab} />
         {activeTab === 'booking' && (
           <BookingFlow
@@ -723,7 +922,13 @@ export function App() {
           />
         )}
         {activeTab === 'my' && (
-          <MyBookings bookings={bookings} services={services} specialists={specialists} onCancel={cancelBooking} />
+          <MyBookings
+            bookings={bookings}
+            services={services}
+            specialists={specialists}
+            onCancel={cancelBooking}
+            onReschedule={rescheduleBooking}
+          />
         )}
         {activeTab === 'admin' && (
           <AdminPanel

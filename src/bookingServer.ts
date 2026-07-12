@@ -55,6 +55,9 @@ export class BookingServer {
   cancelBooking(id: string) {
     return this.mutate(() => {
       const snapshot = this.repository.read();
+      if (!snapshot.bookings.some((booking) => booking.id === id)) {
+        throw new BookingServerError('Запись не найдена.', 404, 'BOOKING_NOT_FOUND');
+      }
       const bookings = snapshot.bookings.map((booking) => booking.id === id ? { ...booking, status: 'cancelled' as const } : booking);
       this.repository.write({ ...snapshot, bookings });
       return bookings;
@@ -76,6 +79,9 @@ export class BookingServer {
   updateBookingStatus(id: string, status: BookingStatus) {
     return this.mutate(() => {
       const snapshot = this.repository.read();
+      if (!snapshot.bookings.some((booking) => booking.id === id)) {
+        throw new BookingServerError('Запись не найдена.', 404, 'BOOKING_NOT_FOUND');
+      }
       const bookings = snapshot.bookings.map((booking) => booking.id === id ? { ...booking, status } : booking);
       this.repository.write({ ...snapshot, bookings });
       return bookings;

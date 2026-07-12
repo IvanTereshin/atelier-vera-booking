@@ -57,3 +57,11 @@ test('conflicting reschedule preserves the original booking', async () => {
   assert.equal(preserved.date, '2030-01-10');
   assert.equal(preserved.time, '10:00');
 });
+
+test('cancel and status update reject unknown booking ids', async () => {
+  const { server, state } = makeServer();
+  const isNotFound = (error) => error instanceof BookingServerError && error.status === 404 && error.code === 'BOOKING_NOT_FOUND';
+  await assert.rejects(() => server.cancelBooking('missing'), isNotFound);
+  await assert.rejects(() => server.updateBookingStatus('missing', 'completed'), isNotFound);
+  assert.deepEqual(state(), { bookings: [], blockedSlots: [] });
+});

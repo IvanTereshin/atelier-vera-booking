@@ -24,7 +24,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { demoDates } from './data';
-import { api, isSlotOccupied } from './mockApi';
+import { api, ApiError } from './apiAdapter';
 import { initTelegramShell } from './telegram';
 import type { BlockedSlot, Booking, BookingStatus, Service, Specialist, TabKey } from './types';
 
@@ -317,7 +317,12 @@ function BookingFlow({
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('idle');
   const [paymentSession, setPaymentSession] = useState<PaymentSession | null>(null);
   const [isCreatingPayment, setIsCreatingPayment] = useState(false);
+  const [availableTimes, setAvailableTimes] = useState<string[]>([]);
+  const [isAvailabilityLoading, setIsAvailabilityLoading] = useState(true);
+  const [availabilityError, setAvailabilityError] = useState('');
+  const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const successRef = useRef<HTMLElement>(null);
+  const idempotencyKeyRef = useRef(crypto.randomUUID());
   const reducedMotion = useReducedMotionPreference();
 
   const selectedService = getService(services, serviceId);
@@ -345,7 +350,6 @@ function BookingFlow({
     }
   }, [availableSpecialists, selectedSpecialist, serviceId]);
 
-  const snapshot = { bookings, blockedSlots };
   const confirmationTime = success?.time ?? time;
   const currentStep = success ? 4 : time ? 3 : date ? 2 : selectedSpecialist ? 1 : 0;
   const prepayAmount = selectedService ? getPrepayAmount(selectedService) : 0;
@@ -355,6 +359,24 @@ function BookingFlow({
     setPaymentStatus('idle');
     setPaymentSession(null);
   }, [settings.defaultPaymentMethod]);
+
+  useEffect(() => {
+    let active = true;
+    setIsAvailabilityLoading(true);
+    setAvailabilityError('');
+    setAvailableTimes([]);
+    api.getAvailability(selectedSpecialist.id, date, selectedSpecialist.slots)
+      .then((availability) => {
+        if (active) setAvailableTimes(availability.filter((slot) => slot.available).map((slot) => slot.time));
+      })
+      .catch((caught) => {
+        if (active) setAvailabilityError(caught instanceof Error ? caught.message : 'Не удалось загрузить свободное время.');
+      })
+      .finally(() => {
+        if (active) setIsAvailabilityLoading(false);
+      });
+    return () => { active = false; };
+  }, [selectedSpecialist.id, selectedSpecialist.slots, date, bookings, blockedSlots, availabilityRetry]);
 
   useGSAP(
     () => {
@@ -369,6 +391,7 @@ function BookingFlow({
   );
 
   const handleServiceSelect = (id: string) => {
+    idempotencyKeyRef.current = crypto.randomUUID();
     setServiceId(id);
     setTime('');
     setSuccess(null);
@@ -378,6 +401,7 @@ function BookingFlow({
   };
 
   const handleSpecialistSelect = (id: string) => {
+    idempotencyKeyRef.current = crypto.randomUUID();
     setSpecialistId(id);
     setTime('');
     setSuccess(null);
@@ -400,14 +424,18 @@ function BookingFlow({
         clientName: currentClient.name,
         clientPhone: currentClient.phone,
         note: note.trim() || undefined,
-      });
+      }, idempotencyKeyRef.current);
       setSuccess(booking);
       setConflictSlot('');
       setTime('');
       setNote('');
+      idempotencyKeyRef.current = crypto.randomUUID();
       onCreated(booking);
     } catch (caught) {
-      setConflictSlot(time);
+      if (caught instanceof ApiError && caught.status === 409 && caught.code === 'SLOT_CONFLICT') {
+        setConflictSlot(time);
+        setAvailableTimes((current) => current.filter((slot) => slot !== time));
+      }
       setError(caught instanceof Error ? caught.message : 'Не удалось создать запись.');
     } finally {
       setIsSaving(false);
@@ -524,6 +552,7 @@ function BookingFlow({
               key={item}
               onClick={() => {
                 setDate(item);
+                idempotencyKeyRef.current = crypto.randomUUID();
                 setTime('');
                 setSuccess(null);
                 setConflictSlot('');
@@ -541,9 +570,24 @@ function BookingFlow({
           <span><i className="waitlist" /> лист ожидания</span>
           <span><i className="conflict" /> конфликт</span>
         </div>
-        <div className="slot-grid">
+        {availabilityError && (
+          <div className="inline-error" role="alert">
+            <p>{availabilityError}</p>
+            <button className="secondary-button compact" type="button" onClick={() => setAvailabilityRetry((value) => value + 1)}>
+              <RefreshCw size={16} /> Повторить загрузку
+            </button>
+          </div>
+        )}
+        {!isAvailabilityLoading && !availabilityError && availableTimes.length === 0 && (
+          <EmptyState title="Свободных окон нет" text="Выберите другого мастера или дату." />
+        )}
+        <div
+          className="slot-grid"
+          aria-busy={isAvailabilityLoading}
+          aria-disabled={Boolean(availabilityError) || isAvailabilityLoading}
+        >
           {selectedSpecialist.slots.map((slot) => {
-            const occupied = isSlotOccupied(snapshot, selectedSpecialist.id, date, slot);
+            const occupied = !availableTimes.includes(slot);
             const waitlistKey = `${selectedSpecialist.id}-${date}-${slot}`;
             const inWaitlist = waitlistEntries.includes(waitlistKey);
             return (
@@ -551,13 +595,16 @@ function BookingFlow({
                 className={`slot-button ${slot === time ? 'selected' : ''} ${occupied ? 'occupied' : 'free'} ${inWaitlist ? 'waitlisted' : ''} ${slot === conflictSlot ? 'conflict' : ''}`}
                 type="button"
                 key={slot}
+                disabled={isAvailabilityLoading || Boolean(availabilityError)}
                 aria-label={`${slot}: ${slot === conflictSlot ? 'конфликт записи' : inWaitlist ? 'вы в листе ожидания' : occupied ? 'занято, можно встать в лист ожидания' : slot === time ? 'выбрано' : 'свободно'}`}
                 onClick={() => {
+                  if (isAvailabilityLoading || availabilityError) return;
                   if (occupied) {
                     joinWaitlist(slot);
                     return;
                   }
                   setTime(slot);
+                  idempotencyKeyRef.current = crypto.randomUUID();
                   setWaitlistNotice('');
                   setSuccess(null);
                   setError('');
@@ -606,7 +653,7 @@ function BookingFlow({
           onMethodChange={changePaymentMethod}
         />
         <button className="code-button" type="button" onClick={() => setPhoneCodeSent(true)}>
-          {phoneCodeSent ? 'Код 4281 отправлен в Telegram' : 'Отправить mock-код подтверждения'}
+          {phoneCodeSent ? 'SIMULATED: код 4281 показан' : 'Показать SIMULATED Telegram-код'}
         </button>
         <textarea
           value={note}
@@ -735,7 +782,7 @@ function PaymentPanel({
         })}
       </div>
       <div className={`payment-status ${status}`}>
-        <strong>{selectedMethod.title} · {mode === 'production' ? 'production' : 'test'}</strong>
+          <strong>{selectedMethod.title} · SIMULATED {mode === 'production' ? 'production contract' : 'test'}</strong>
         <span>{selectedMethod.details}</span>
         {session && (
           <code>

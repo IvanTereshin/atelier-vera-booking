@@ -33,6 +33,7 @@ export type Booking = {
   note?: string;
   status: BookingStatus;
   createdAt: string;
+  idempotencyKey?: string;
 };
 
 export type BlockedSlot = {
